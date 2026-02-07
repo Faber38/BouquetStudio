@@ -7,14 +7,14 @@ from typing import List
 
 @dataclass
 class BouquetEntry:
-    service_line: str              # z.B. "#SERVICE 1:0:1:..."
-    description: str = ""          # z.B. "Das Erste HD"
+    service_line: str  # z.B. "#SERVICE 1:0:1:..."
+    description: str = ""  # z.B. "Das Erste HD"
 
 
 @dataclass
 class Bouquet:
     name: str
-    filename: str
+    filename: str  # userbouquet.*.tv
     entries: List[BouquetEntry] = field(default_factory=list)
 
 
@@ -25,7 +25,7 @@ def _read_text(path: Path) -> List[str]:
 def parse_bouquets(root: Path) -> List[Bouquet]:
     """
     Liest bouquets.tv und ermittelt die userbouquet-Dateien.
-    Den Anzeigenamen holen wir später aus der jeweiligen userbouquet-Datei (#NAME).
+    Den Anzeigenamen holen wir aus der jeweiligen userbouquet-Datei (#NAME).
     """
     bouquets_file = root / "bouquets.tv"
     if not bouquets_file.exists():
@@ -38,7 +38,7 @@ def parse_bouquets(root: Path) -> List[Bouquet]:
         if not line.startswith("#SERVICE"):
             continue
 
-        # meist steht am Ende "... FROM BOUQUET \"userbouquet.xyz.tv\" ORDER BY ..."
+        # Meist: ... FROM BOUQUET "userbouquet.xyz.tv" ORDER BY ...
         if "FROM BOUQUET" not in line:
             continue
 
