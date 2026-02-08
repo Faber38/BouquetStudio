@@ -1,4 +1,4 @@
-name: Release Binary (Linux)
+name: Release Binary (Linux + Windows)
 
 on:
   push:
@@ -9,8 +9,14 @@ permissions:
   contents: write
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - name: Checkout repository
@@ -31,18 +37,37 @@ jobs:
 
       - name: Build onefile binary (PyInstaller)
         run: |
+          pyinstaller --noconfirm --clean --onefile ^
+            --paths src ^
+            --name BouquetStudio ^
+            app.py
+        shell: cmd
+        if: runner.os == 'Windows'
+
+      - name: Build onefile binary (PyInstaller)
+        run: |
           pyinstaller --noconfirm --clean --onefile \
             --paths src \
             --name BouquetStudio \
             app.py
+        if: runner.os != 'Windows'
 
-      - name: Prepare release artifact
+      - name: Prepare release artifact (Linux)
+        if: runner.os != 'Windows'
         run: |
           TAG="${GITHUB_REF_NAME}"
           mv dist/BouquetStudio "BouquetStudio-${TAG}-linux-x86_64"
+
+      - name: Prepare release artifact (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $tag = "${env:GITHUB_REF_NAME}"
+          Move-Item "dist\BouquetStudio.exe" "BouquetStudio-$tag-windows-x86_64.exe"
+        shell: pwsh
 
       - name: Upload binary to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             BouquetStudio-${{ github.ref_name }}-linux-x86_64
+            BouquetStudio-${{ github.ref_name }}-windows-x86_64.exe
