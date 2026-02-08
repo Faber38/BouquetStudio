@@ -1,5 +1,15 @@
-.venv/
+# Python
 __pycache__/
 *.pyc
-.env
+.venv/
+
+# PyInstaller / Build
+build/
+dist/
+*.spec
+
+# Lokale Testdaten
+BouquetTest/
+
+# VS Code
 .vscode/
