@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile all Python files
+        run: |
+          python -m compileall -q src
+
+      - name: Smoke test (core import)
+        env:
+          PYTHONPATH: src
+        run: |
+          python - << 'EOF'
+          from bouquetstudio.core import bouquets, lamedb
+          print("Core import OK")
+          EOF
+
+      - name: Create release archive
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          zip -r bouquetstudio-${{ github.ref_name }}.zip . \
+            -x ".git/*" ".venv/*" "__pycache__/*" "*.pyc"
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bouquetstudio-${{ github.ref_name }}.zip
