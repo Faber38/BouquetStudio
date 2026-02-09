@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         # ✅ Dirty tracking
         self._dirty_bouquet_names: set[int] = set()
         self._dirty_bouquet_content: set[int] = set()
+        self._dirty_bouquet_order = False
 
         # ✅ verhindert Dirty beim programmgesteuerten Befüllen/Löschen
         self._suppress_dirty = False
@@ -117,6 +118,14 @@ class MainWindow(QMainWindow):
         self.bouquets.setEditTriggers(
             QListWidget.EditTrigger.DoubleClicked | QListWidget.EditTrigger.EditKeyPressed
         )
+        # Bouquets links: Reihenfolge per Drag&Drop ändern
+        self.bouquets.setDragEnabled(True)
+        self.bouquets.setAcceptDrops(True)
+        self.bouquets.setDropIndicatorShown(True)
+        self.bouquets.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+
+        self.bouquets.model().rowsMoved.connect(self._on_bouquet_order_changed)
+
         left.addWidget(self.bouquets)
 
         self.add_bouquet_btn = QPushButton("➕ Bouquet hinzufügen")
@@ -300,13 +309,12 @@ class MainWindow(QMainWindow):
         a_about = m_help.addAction("Über…")
         a_about.triggered.connect(self.action_about)
 
-        a_about.triggered.connect(self.action_about)
-
     # -------------------------------------------------------------------------
     # Dirty-Warnung beim Schließen
     # -------------------------------------------------------------------------
     def closeEvent(self, event):
-        if self._dirty_bouquet_names or self._dirty_bouquet_content:
+        if self._dirty_bouquet_names or self._dirty_bouquet_content or self._dirty_bouquet_order:
+
             res = QMessageBox.question(
                 self,
                 "Ungespeicherte Änderungen",
@@ -601,6 +609,14 @@ class MainWindow(QMainWindow):
             for b in self.bouquets_data:
                 item = QListWidgetItem(b.name)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+
+                # filename für Reihenfolge speichern (stabil, unabhängig vom Namen)
+                try:
+                    p = _get_bouquet_file_path(enigma2_dir, b)
+                    item.setData(Qt.UserRole + 10, p.name)  # z.B. userbouquet.xyz.tv
+                except Exception:
+                    pass
+
                 self.bouquets.addItem(item)
 
             # Quelle-Dropdown füllen
@@ -643,6 +659,68 @@ class MainWindow(QMainWindow):
             rx = s.get_active_profile_name()
             self._set_receiver_in_statusbar(rx if rx else None)
 
+    def _bouquet_order_from_listwidget(self) -> list[str]:
+        """Bouquet-Filenames in der Reihenfolge der linken Liste."""
+        order: list[str] = []
+        for i in range(self.bouquets.count()):
+            item = self.bouquets.item(i)
+            fn = item.data(Qt.UserRole + 10)  # dort speichern wir gleich den filename
+            if fn:
+                order.append(str(fn))
+        return order
+
+    def _rewrite_bouquets_tv_in_ui_order(self):
+        if not self.workspace_root:
+            return
+
+        bouquets_tv = self.workspace_root / "bouquets.tv"
+        if not bouquets_tv.exists():
+            return
+
+        lines = bouquets_tv.read_text(encoding="utf-8", errors="ignore").splitlines()
+
+        # Blocks: SERVICE + direkt folgende DESCRIPTION
+        blocks: dict[str, list[str]] = {}
+        prefix: list[str] = []  # alles, was kein Bouquet-Block ist (z.B. #NAME …)
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line.strip().startswith("#SERVICE") and 'FROM BOUQUET "' in line:
+                q1 = line.find('"')
+                q2 = line.find('"', q1 + 1)
+                if q1 != -1 and q2 != -1:
+                    fn = line[q1 + 1 : q2].strip()
+                    block = [line]
+                    if i + 1 < len(lines) and lines[i + 1].strip().startswith("#DESCRIPTION"):
+                        block.append(lines[i + 1])
+                        i += 1
+                    blocks[fn] = block
+                else:
+                    prefix.append(line)
+            else:
+                prefix.append(line)
+            i += 1
+
+        order = self._bouquet_order_from_listwidget()
+
+        new_lines: list[str] = []
+        new_lines.extend(prefix)
+
+        for fn in order:
+            if fn in blocks:
+                new_lines.extend(blocks[fn])
+
+        # falls etwas in bouquets.tv existiert, aber nicht in der UI-Liste: hinten anhängen
+        for fn, block in blocks.items():
+            if fn not in order:
+                new_lines.extend(block)
+
+        with open(bouquets_tv, "w", encoding="utf-8", errors="ignore", newline="\r\n") as f:
+            f.write("\n".join(new_lines) + "\n")
+
+        self._dirty_bouquet_order = False
+        self._dbg("Bouquet-Reihenfolge in bouquets.tv gespeichert")
+
     def action_save_project(self):
         if not self.workspace_root:
             QMessageBox.warning(self, "Speichern", "Kein Projektordner geöffnet.")
@@ -672,6 +750,8 @@ class MainWindow(QMainWindow):
             )
             self._save_bouquet_file(self._current_bouquet)
             self._dbg("Speichern: OK")
+            if self._dirty_bouquet_order:
+                self._rewrite_bouquets_tv_in_ui_order()
 
             idx = self.bouquets.currentRow()
             if idx >= 0:
@@ -703,6 +783,8 @@ class MainWindow(QMainWindow):
         failed: list[str] = []
 
         self._dbg(f"Alle speichern: start ({len(self.bouquets_data)}) root={root}")
+        if self._dirty_bouquet_order:
+            self._rewrite_bouquets_tv_in_ui_order()
 
         for b in self.bouquets_data:
             try:
@@ -816,6 +898,10 @@ class MainWindow(QMainWindow):
 
         self._on_source_bouquet_selected(index)
         self._update_source_marks()
+
+    def _on_bouquet_order_changed(self, *args):
+        self._dirty_bouquet_order = True
+        self._dbg("Bouquet-Reihenfolge geändert -> dirty")
 
     # -------------------------------------------------------------------------
     # Quelle (Dropdown) auswählen
