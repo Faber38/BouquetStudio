@@ -30,31 +30,29 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PySide6
+          pip install pyinstaller PySide6 paramiko
 
       - name: Compile sources
         run: python -m compileall -q src
 
-       - name: Build onefile binary (PyInstaller)
+      - name: Build onefile binary (PyInstaller)
+        if: runner.os == 'Windows'
+        shell: cmd
         run: |
           pyinstaller --noconfirm --clean --onefile ^
             --paths src ^
             --additional-hooks-dir hooks ^
             --name BouquetStudio ^
             app.py
-        shell: cmd
-        if: runner.os == 'Windows'
 
-
-       - name: Build onefile binary (PyInstaller)
+      - name: Build onefile binary (PyInstaller)
+        if: runner.os != 'Windows'
         run: |
           pyinstaller --noconfirm --clean --onefile \
             --paths src \
             --additional-hooks-dir hooks \
             --name BouquetStudio \
             app.py
-        if: runner.os != 'Windows'
-
 
       - name: Prepare release artifact (Linux)
         if: runner.os != 'Windows'
@@ -64,10 +62,10 @@ jobs:
 
       - name: Prepare release artifact (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           $tag = "${env:GITHUB_REF_NAME}"
           Move-Item "dist\BouquetStudio.exe" "BouquetStudio-$tag-windows-x86_64.exe"
-        shell: pwsh
 
       - name: Upload binary to GitHub Release
         uses: softprops/action-gh-release@v2
