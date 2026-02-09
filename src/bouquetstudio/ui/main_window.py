@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QComboBox,
     QInputDialog,
+    QDialog,
+    QTextBrowser,
 )
 
 from bouquetstudio.core.bouquets import parse_bouquets, load_bouquet_entries
@@ -32,6 +34,7 @@ from bouquetstudio.transport.receiver_download import download_enigma2_dir
 from bouquetstudio.core.settings import AppSettings
 from bouquetstudio.transport.receiver_upload import plan_upload_sftp, upload_sftp_with_backup
 from bouquetstudio.transport.receiver_reload import reload_enigma2
+from bouquetstudio.ui.help_text import HELP_TEXT
 
 # Optional: simples Logging-Setup (Konsole)
 logging.basicConfig(
@@ -288,7 +291,15 @@ class MainWindow(QMainWindow):
 
         # Hilfe
         m_help = menubar.addMenu("Hilfe")
+
+        a_help = m_help.addAction("Bedienung")
+        a_help.triggered.connect(self.action_show_help)
+
+        m_help.addSeparator()
+
         a_about = m_help.addAction("Über…")
+        a_about.triggered.connect(self.action_about)
+
         a_about.triggered.connect(self.action_about)
 
     # -------------------------------------------------------------------------
@@ -345,6 +356,25 @@ class MainWindow(QMainWindow):
         self._dbg(f"Projekt öffnen: {self.project_dir}")
 
         self.open_project_dir(self.project_dir)
+
+    def action_show_help(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("BouquetStudio – Bedienung")
+        dlg.resize(800, 600)
+
+        layout = QVBoxLayout(dlg)
+
+        view = QTextBrowser()
+        view.setHtml(HELP_TEXT)
+        view.setOpenExternalLinks(True)
+        layout.addWidget(view)
+
+        btn_close = QPushButton("Schließen")
+        btn_close.clicked.connect(dlg.accept)
+        layout.addWidget(btn_close, alignment=Qt.AlignRight)
+
+        dlg.setLayout(layout)
+        dlg.exec()
 
     def action_add_new_bouquet(self):
         if not self.workspace_root:
