@@ -24,9 +24,14 @@ from PySide6.QtWidgets import (
 )
 
 from bouquetstudio.core.bouquets import parse_bouquets, load_bouquet_entries
+from bouquetstudio import __app_name__, __version__, __author__
 from bouquetstudio.core.lamedb import load_lamedb_service_names, resolve_service_name
 from bouquetstudio.ui.target_list import TargetListWidget
-
+from bouquetstudio.ui.receiver_settings_dialog import ReceiverSettingsDialog
+from bouquetstudio.transport.receiver_download import download_enigma2_dir
+from bouquetstudio.core.settings import AppSettings
+from bouquetstudio.transport.receiver_upload import plan_upload_sftp, upload_sftp_with_backup
+from bouquetstudio.transport.receiver_reload import reload_enigma2
 
 # Optional: simples Logging-Setup (Konsole)
 logging.basicConfig(
@@ -110,10 +115,17 @@ class MainWindow(QMainWindow):
             QListWidget.EditTrigger.DoubleClicked | QListWidget.EditTrigger.EditKeyPressed
         )
         left.addWidget(self.bouquets)
+
         self.add_bouquet_btn = QPushButton("➕ Bouquet hinzufügen")
         self.add_bouquet_btn.setToolTip("Neues TV-Bouquet anlegen und in bouquets.tv eintragen")
         self.add_bouquet_btn.clicked.connect(self.action_add_new_bouquet)
         left.addWidget(self.add_bouquet_btn)
+
+        # ✅ NEU: Bouquet entfernen
+        self.remove_bouquet_btn = QPushButton("🗑️ Bouquet entfernen")
+        self.remove_bouquet_btn.setToolTip("Ausgewähltes Bouquet entfernen (Datei + bouquets.tv)")
+        self.remove_bouquet_btn.clicked.connect(self.action_remove_bouquet)
+        left.addWidget(self.remove_bouquet_btn)
 
         # ---------------------------------------------------------------------
         # Middle (Quelle)
@@ -163,6 +175,8 @@ class MainWindow(QMainWindow):
 
         self.target = TargetListWidget()
         right.addWidget(self.target, 1)
+        # 📌 Doppelklick: Marker/Überschrift per Dialog ändern
+        self.target.itemDoubleClicked.connect(self._edit_target_marker_dialog)
 
         # ✅ Änderungen in der Ziel-Liste (rechts) als "dirty" markieren
         m = self.target.model()
@@ -181,6 +195,15 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
 
+        # Statusbar: Receiver-Profil + Projektpfad
+        self._receiver_label = QLabel("")
+        self._receiver_label.setStyleSheet("color: gray; font-weight: bold;")
+        self.statusBar().addPermanentWidget(self._receiver_label)
+
+        self._path_label = QLabel("")
+        self._path_label.setStyleSheet("color: gray;")
+        self.statusBar().addPermanentWidget(self._path_label, 1)
+
         # ---------------------------------------------------------------------
         # Signals
         # ---------------------------------------------------------------------
@@ -190,12 +213,18 @@ class MainWindow(QMainWindow):
         self.source_combo.currentIndexChanged.connect(self._on_source_bouquet_selected)
         self.search.textChanged.connect(self._filter_entries)
 
-        # Initial load (Test) – nur wenn vorhanden, sonst leer starten
-        if self.test_root.exists():
+        # Initial load: zuletzt verwendetes Projekt, sonst Test-Pfad, sonst leer
+        s = AppSettings()
+        last = Path(s.get_last_project_dir()) if s.get_last_project_dir() else None
+
+        if last and last.exists():
+            self.project_dir = last
+            self.open_project_dir(last)
+        elif self.test_root.exists():
             self.project_dir = self.test_root
             self.open_project_dir(self.test_root)
         else:
-            self._dbg("Start: kein Test-Projekt gefunden – bitte 'Datei → Projekt öffnen…' wählen")
+            self._dbg("Start: kein Projekt gefunden – bitte 'Datei → Projekt öffnen…' wählen")
 
     # -------------------------------------------------------------------------
     # Debug
@@ -237,6 +266,9 @@ class MainWindow(QMainWindow):
 
         # Receiver (Platzhalter-Menü)
         m_rx = menubar.addMenu("Receiver")
+
+        a_rx_settings = m_rx.addAction("Verbindungseinstellungen…")
+        a_rx_settings.triggered.connect(self.action_receiver_settings)
 
         a_rx_connect = m_rx.addAction("Verbinden…")
         a_rx_connect.triggered.connect(self.action_receiver_connect)
@@ -304,7 +336,10 @@ class MainWindow(QMainWindow):
             return
 
         self.project_dir = Path(folder)
+        self._set_path_in_statusbar(self.project_dir)
+
         self.workspace_root = self.project_dir
+        AppSettings().set_last_project_dir(self.project_dir)
 
         self.setWindowTitle(f"BouquetStudio – {self.project_dir}")
         self._dbg(f"Projekt öffnen: {self.project_dir}")
@@ -349,24 +384,25 @@ class MainWindow(QMainWindow):
             return
 
         # 1) userbouquet-Datei anlegen (minimal, Enigma2-konform)
-        userbouquet_path.write_text(f"#NAME {name}\n", encoding="utf-8", errors="ignore")
+        with open(userbouquet_path, "w", encoding="utf-8", errors="ignore", newline="\r\n") as f:
+            f.write(f"#NAME {name}\n")
 
-        # 2) In bouquets.tv eintragen (damit parse_bouquets() es findet)
+        # 2) In bouquets.tv eintragen
         svc_line = f'#SERVICE 1:7:1:0:0:0:0:0:0:0:FROM BOUQUET "{filename}" ORDER BY bouquet'
         desc_line = f"#DESCRIPTION {name}"
 
         txt = bouquets_tv.read_text(encoding="utf-8", errors="ignore").splitlines()
-        # ans Ende anhängen (mit Leerzeile dazwischen, falls Datei nicht leer ist)
         if txt and txt[-1].strip() != "":
             txt.append("")
         txt.append(svc_line)
         txt.append(desc_line)
 
-        bouquets_tv.write_text("\n".join(txt) + "\n", encoding="utf-8", errors="ignore")
+        with open(bouquets_tv, "w", encoding="utf-8", errors="ignore", newline="\r\n") as f:
+            f.write("\n".join(txt) + "\n")
 
         self._dbg(f"Neues Bouquet angelegt: {name} ({filename})")
 
-        # 3) UI/Model sauber neu laden, damit links + Quelle-Dropdown es direkt haben
+        # 3) UI/Model sauber neu laden
         self.open_project_dir(self.workspace_root)
 
         # optional: direkt auswählen (Name suchen)
@@ -374,6 +410,135 @@ class MainWindow(QMainWindow):
             if getattr(b, "name", "") == name:
                 self.bouquets.setCurrentRow(i)
                 break
+
+    def _set_path_in_statusbar(self, p: Path | None):
+        if not hasattr(self, "_path_label"):
+            return
+        self._path_label.setText(str(p) if p else "")
+
+    def _set_receiver_in_statusbar(self, name: str | None):
+        if not hasattr(self, "_receiver_label"):
+            return
+        if name:
+            self._receiver_label.setText(f"Receiver: {name}")
+        else:
+            self._receiver_label.setText("")
+
+    def action_remove_bouquet(self):
+        """
+        Entfernt das aktuell links ausgewählte Bouquet:
+        - Eintrag aus bouquets.tv entfernen
+        - userbouquet.*.tv (nach Backup) löschen
+        """
+        if not self.workspace_root:
+            QMessageBox.warning(self, "Bouquet entfernen", "Kein Projektordner geöffnet.")
+            return
+
+        idx = self.bouquets.currentRow()
+        if idx < 0 or idx >= len(self.bouquets_data):
+            QMessageBox.warning(self, "Bouquet entfernen", "Kein Bouquet ausgewählt.")
+            return
+
+        b = self.bouquets_data[idx]
+        name = (getattr(b, "name", "") or "<unbekannt>").strip()
+
+        # Pfad ermitteln
+        try:
+            path = _get_bouquet_file_path(self.workspace_root, b)
+        except Exception as e:
+            QMessageBox.critical(self, "Bouquet entfernen", f"Dateipfad nicht ermittelbar:\n{e}")
+            return
+
+        filename = path.name
+
+        # Schutz: nur userbouquet.* löschen
+        if not filename.startswith("userbouquet."):
+            QMessageBox.warning(
+                self,
+                "Bouquet entfernen",
+                f"Dieses Bouquet scheint kein userbouquet.* zu sein:\n{filename}\n\n"
+                "Zum Schutz wird es nicht gelöscht.",
+            )
+            return
+
+        bouquets_tv = self.workspace_root / "bouquets.tv"
+        if not bouquets_tv.exists():
+            QMessageBox.critical(self, "Bouquet entfernen", f"Nicht gefunden: {bouquets_tv}")
+            return
+
+        # Warnung / Bestätigung
+        res = QMessageBox.question(
+            self,
+            "Bouquet entfernen",
+            f"Bouquet wirklich entfernen?\n\n"
+            f"Name: {name}\n"
+            f"Datei: {filename}\n\n"
+            f"• Eintrag wird aus bouquets.tv entfernt\n"
+            f"• Datei wird gelöscht (nach Backup)\n\n"
+            f"Diese Aktion kann nicht rückgängig gemacht werden.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if res != QMessageBox.Yes:
+            self._dbg("Bouquet entfernen: abgebrochen")
+            return
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        try:
+            # 1) Backup userbouquet-Datei
+            if path.exists():
+                backup_b = path.with_suffix(path.suffix + f".bak.{ts}")
+                backup_b.write_bytes(path.read_bytes())
+                self._dbg(f"Bouquet entfernen: backup bouquet={backup_b}")
+            else:
+                self._dbg("Bouquet entfernen: bouquet-datei existiert nicht (trotzdem weiter)")
+
+            # 2) Backup bouquets.tv
+            backup_tv = bouquets_tv.with_suffix(bouquets_tv.suffix + f".bak.{ts}")
+            backup_tv.write_bytes(bouquets_tv.read_bytes())
+            self._dbg(f"Bouquet entfernen: backup bouquets.tv={backup_tv}")
+
+            # 3) bouquets.tv bereinigen (SERVICE-Zeile + folgende DESCRIPTION-Zeile entfernen)
+            lines = bouquets_tv.read_text(encoding="utf-8", errors="ignore").splitlines()
+            needle = f'FROM BOUQUET "{filename}"'
+            new_lines: list[str] = []
+
+            skip_next_desc = False
+            removed = 0
+
+            for line in lines:
+                if skip_next_desc:
+                    # nur DIREKT folgende DESCRIPTION-Zeile skippen
+                    if line.strip().startswith("#DESCRIPTION"):
+                        removed += 1
+                        skip_next_desc = False
+                        continue
+                    skip_next_desc = False
+
+                if needle in line:
+                    removed += 1
+                    skip_next_desc = True
+                    continue
+
+                new_lines.append(line)
+
+            with open(bouquets_tv, "w", encoding="utf-8", errors="ignore", newline="\r\n") as f:
+                f.write("\n".join(new_lines) + "\n")
+
+            self._dbg(f"Bouquet entfernen: bouquets.tv bereinigt (removed_lines={removed})")
+
+            # 4) userbouquet-Datei löschen
+            if path.exists():
+                path.unlink()
+                self._dbg(f"Bouquet entfernen: gelöscht {path}")
+
+            # 5) UI neu laden
+            self.open_project_dir(self.workspace_root)
+
+        except Exception as e:
+            self._dbg(f"Bouquet entfernen: FEHLER: {e}")
+            QMessageBox.critical(self, "Bouquet entfernen", str(e))
 
     def open_project_dir(self, enigma2_dir: Path):
         self._dbg(f"Laden: Start aus {enigma2_dir}")
@@ -426,17 +591,27 @@ class MainWindow(QMainWindow):
             self._dirty_bouquet_content.clear()
 
             self._dbg(f"Laden: fertig, bouquets={len(self.bouquets_data)}")
+            self._set_path_in_statusbar(enigma2_dir)
 
             # Auto-select
             if self.bouquets.count() > 0:
-                self.bouquets.setCurrentRow(0)  # Ziel wählen -> füllt rechts/markiert state
-                self.source_combo.setCurrentIndex(0)  # Quelle initial gleich
+                self.bouquets.setCurrentRow(0)
+                self.source_combo.setCurrentIndex(0)
             else:
                 self._dbg("Laden: keine Bouquets gefunden (Liste leer)")
 
         except Exception as e:
             self._dbg(f"Laden: FEHLER: {e}")
             QMessageBox.critical(self, "Projekt öffnen fehlgeschlagen", str(e))
+
+            self._set_path_in_statusbar(enigma2_dir)
+
+            # Receiver-Profil anzeigen (falls vorhanden)
+            from bouquetstudio.core.settings import AppSettings
+
+            s = AppSettings()
+            rx = s.get_active_profile_name()
+            self._set_receiver_in_statusbar(rx if rx else None)
 
     def action_save_project(self):
         if not self.workspace_root:
@@ -457,7 +632,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Speichern", "Rechte Liste ist leer – nichts zu speichern.")
             return
 
-        # Ziel-Reihenfolge übernehmen (wenn Ziel-Liste nicht leer)
+        # Ziel-Reihenfolge übernehmen
         self._apply_target_order_to_model()
 
         try:
@@ -521,7 +696,6 @@ class MainWindow(QMainWindow):
             self._dbg(f"Alle speichern: fertig ok={ok}, failed=0")
             self.statusBar().showMessage(f"Alle Bouquets gespeichert ✓ ({ok})", 6000)
 
-        # ✅ nach all-save: dirty reset
         self._dirty_bouquet_names.clear()
         self._dirty_bouquet_content.clear()
 
@@ -543,7 +717,6 @@ class MainWindow(QMainWindow):
 
         lines: list[str] = []
 
-        # ✅ #NAME immer aus dem aktuellen Model-Namen schreiben (UI -> Model -> Datei)
         bn = (getattr(bouquet, "name", "Bouquet") or "Bouquet").strip()
         lines.append(f"#NAME {bn}")
 
@@ -563,7 +736,9 @@ class MainWindow(QMainWindow):
             if desc:
                 lines.append(f"#DESCRIPTION {desc}")
 
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8", errors="ignore")
+        with open(path, "w", encoding="utf-8", errors="ignore", newline="\r\n") as f:
+            f.write("\n".join(lines) + "\n")
+
         self._dbg(f"_save_bouquet_file: geschrieben ({len(lines)} Zeilen)")
 
     # -------------------------------------------------------------------------
@@ -572,10 +747,15 @@ class MainWindow(QMainWindow):
     def action_about(self):
         QMessageBox.information(
             self,
-            "Über BouquetStudio",
-            "BouquetStudio\n"
-            "Lokaler Enigma2 Bouquet Editor (Python / PySide6)\n"
-            "Ziel: Bouquet-Editing + Save + später Receiver Upload\n",
+            f"Über {__app_name__}",
+            f"{__app_name__}\n"
+            f"Enigma2 Bouquet Editor\n\n"
+            f"Version: {__version__}\n"
+            f"Autor: {__author__}\n\n"
+            "Lokaler Editor für Enigma2-Bouquets.\n"
+            "Bearbeiten, Sortieren und Übertragen von Bouquets\n"
+            "per SFTP – ohne Cloud, ohne externe Dienste.\n\n"
+            "© 2026 Holger Mangold",
         )
 
     # -------------------------------------------------------------------------
@@ -591,25 +771,20 @@ class MainWindow(QMainWindow):
         root = self.workspace_root if self.workspace_root else self.test_root
         self._dbg(f"Ziel gewählt: idx={index} name='{getattr(bouquet, 'name', '?')}' root={root}")
 
-        # ✅ Suche leeren (wir filtern die Quelle)
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
 
-        # ✅ Ziel-Liste leeren (neue Ziel-Auswahl)
         self._suppress_dirty = True
         self.target.clear()
         self._suppress_dirty = False
 
-        # ✅ Standard: Quelle folgt dem Ziel (damit "wie früher" direkt funktioniert)
+        # Quelle folgt dem Ziel
         self.source_combo.blockSignals(True)
         self.source_combo.setCurrentIndex(index)
         self.source_combo.blockSignals(False)
 
-        # Quelle laden (füllt Mitte)
         self._on_source_bouquet_selected(index)
-
-        # Markierung aktualisieren
         self._update_source_marks()
 
     # -------------------------------------------------------------------------
@@ -739,10 +914,6 @@ class MainWindow(QMainWindow):
                     it.setText(it.text()[2:].lstrip())
 
     def _apply_target_order_to_model(self):
-        """
-        Rechtes Fenster ist die neue Wahrheit:
-        - Bouquet wird EXAKT durch Target ersetzt (kein Rest anhängen!)
-        """
         if not self._current_bouquet:
             return
         if self.target.count() == 0:
@@ -779,6 +950,54 @@ class MainWindow(QMainWindow):
         self._dirty_bouquet_content.add(idx)
         self._dbg(f"Ziel-Liste geändert -> dirty (idx={idx})")
 
+    def _edit_target_marker_dialog(self, item: QListWidgetItem):
+        """
+        Doppelklick im Ziel (rechts):
+        - Nur für Marker (Service-Typ 64/832)
+        - Öffnet Dialog und schreibt Text in item + entry["description"]
+        """
+        if item is None:
+            return
+
+        entry = item.data(Qt.UserRole)
+        if not isinstance(entry, dict):
+            return
+
+        svc = (entry.get("service_line") or "").strip()
+        if not _is_marker_service(svc):
+            return
+
+        # Aktuellen Text holen (ohne 📌)
+        current = (item.text() or "").strip()
+        if current.startswith("📌"):
+            current = current[1:].strip()
+
+        new_text, ok = QInputDialog.getText(
+            self,
+            "Überschrift ändern",
+            "Text:",
+            text=current,
+        )
+        if not ok:
+            return
+
+        new_text = (new_text or "").strip()
+        if not new_text:
+            QMessageBox.warning(self, "Ungültig", "Überschrift darf nicht leer sein.")
+            return
+
+        # UI aktualisieren
+        item.setText(f"📌 {new_text}")
+        # Model-Entry aktualisieren (wichtig fürs Speichern)
+        entry["description"] = new_text
+        item.setData(Qt.UserRole, entry)
+
+        # Dirty markieren (sicher, auch wenn model.dataChanged mal nicht feuert)
+        idx = self.bouquets.currentRow()
+        if idx >= 0:
+            self._dirty_bouquet_content.add(idx)
+        self._dbg(f"Marker geändert: '{new_text}'")
+
     def action_add_target_line(self):
         if not self._current_bouquet:
             QMessageBox.warning(self, "Zeile hinzufügen", "Kein Bouquet (Ziel) ausgewählt.")
@@ -791,7 +1010,6 @@ class MainWindow(QMainWindow):
             "description": "Neue Überschrift",
         }
 
-        # 📌 ist nur UI – gespeichert wird nur #SERVICE + #DESCRIPTION
         it = QListWidgetItem("📌 Neue Überschrift")
         it.setData(Qt.UserRole, entry)
         it.setData(Qt.UserRole + 1, marker_service)
@@ -804,6 +1022,10 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------------
     # Receiver-Aktionen (Platzhalter)
     # -------------------------------------------------------------------------
+    def action_receiver_settings(self):
+        dlg = ReceiverSettingsDialog(self)
+        dlg.exec()
+
     def action_receiver_connect(self):
         QMessageBox.information(
             self,
@@ -813,26 +1035,197 @@ class MainWindow(QMainWindow):
         )
 
     def action_receiver_download(self):
-        QMessageBox.information(
-            self,
-            "Download (kommt als nächstes)",
-            "Hier laden wir später /etc/enigma2/ in ein lokales Workspace-Verzeichnis.\n"
-            "Dann öffnen wir dieses Workspace automatisch als Projekt.",
-        )
+        settings = AppSettings()
+        name = settings.get_active_profile_name()
+        if not name:
+            QMessageBox.warning(self, "Download", "Kein Receiver-Profil aktiv.")
+            return
+
+        p = settings.load_profile(name)
+        self._set_receiver_in_statusbar(name)
+        if not p:
+            QMessageBox.warning(self, "Download", "Receiver-Profil nicht gefunden.")
+            return
+
+        from pathlib import Path
+        import shutil
+
+        # Fester Workspace pro Receiver-Profil (kein Timestamp mehr)
+        receiver_ws_root = Path.home() / ".local" / "share" / "BouquetStudio" / "workspaces" / name
+
+        workspace = receiver_ws_root / "etc" / "enigma2"
+
+        # Workspace immer sauber neu aufsetzen (damit keine Altlasten bleiben)
+        if receiver_ws_root.exists():
+            shutil.rmtree(receiver_ws_root)
+
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self._dbg(f"Download: start {p.host} -> {workspace}")
+            download_enigma2_dir(
+                host=p.host,
+                port=p.port,
+                user=p.user,
+                password=p.password,
+                remote_dir=p.remote_path,
+                local_dir=workspace,
+            )
+            self._dbg("Download: OK")
+
+            # Workspace automatisch öffnen
+            self.project_dir = workspace
+            self.open_project_dir(workspace)
+            AppSettings().set_last_project_dir(workspace)
+
+            QMessageBox.information(
+                self,
+                "Download abgeschlossen",
+                f"Bouquets wurden heruntergeladen nach:\n{workspace}",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Download fehlgeschlagen",
+                str(e),
+            )
 
     def action_receiver_upload(self):
-        QMessageBox.information(
-            self,
-            "Upload (kommt als nächstes)",
-            "Hier laden wir später die geänderten Dateien zurück nach /etc/enigma2/.\n"
-            "Optional: vorher Backup auf der Box anlegen.",
-        )
+        settings = AppSettings()
+        prof_name = settings.get_active_profile_name()
+        if not prof_name:
+            QMessageBox.warning(self, "Upload", "Kein Receiver-Profil aktiv.")
+            return
+
+        p = settings.load_profile(prof_name)
+        if not p:
+            QMessageBox.warning(self, "Upload", "Receiver-Profil nicht gefunden.")
+            return
+
+        if p.type != "sftp":
+            QMessageBox.warning(self, "Upload", "Aktuell ist nur SFTP-Upload umgesetzt.")
+            return
+
+        local_dir = self.workspace_root or self.project_dir
+        if not local_dir or not Path(local_dir).exists():
+            QMessageBox.warning(self, "Upload", "Kein lokales Projektverzeichnis geöffnet.")
+            return
+
+        local_dir = Path(local_dir)
+
+        try:
+            self._dbg(f"Upload: Planung ({p.host}) …")
+            items = plan_upload_sftp(
+                host=p.host,
+                port=p.port,
+                user=p.user,
+                password=p.password,
+                remote_dir=p.remote_path,
+                local_dir=local_dir,
+            )
+
+            if not items:
+                QMessageBox.information(
+                    self, "Upload", "Keine Änderungen gefunden – nichts hochzuladen."
+                )
+                return
+
+            # Hinweis / Bestätigung (was wird überschrieben)
+            lines = []
+            for it in items:
+                reason = "geändert" if it.reason == "changed" else "fehlt auf Receiver"
+                lines.append(f"- {it.local_path.name} ({reason})")
+
+            msg = (
+                "Achtung: Auf dem Receiver werden Dateien überschrieben.\n\n"
+                "Folgende Dateien werden hochgeladen:\n"
+                + "\n".join(lines)
+                + "\n\nVorher wird automatisch ein Backup auf dem Receiver angelegt."
+            )
+
+            res = QMessageBox.question(
+                self,
+                "Upload bestätigen",
+                msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if res != QMessageBox.Yes:
+                self._dbg("Upload: abgebrochen")
+                return
+
+            from datetime import datetime
+
+            suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+            self._dbg("Upload: starte (mit Backup) …")
+            backup_dir = upload_sftp_with_backup(
+                host=p.host,
+                port=p.port,
+                user=p.user,
+                password=p.password,
+                remote_dir=p.remote_path,
+                local_dir=local_dir,
+                upload_items=items,
+                backup_suffix=suffix,
+            )
+
+            # danach Bouquets neu einlesen (DreamboxEdit-Style)
+            try:
+                reload_enigma2(
+                    host=p.host,
+                    port=p.port,
+                    user=p.user,
+                    password=p.password,
+                    webif_port=getattr(p, "webif_port", 80),
+                )
+            except Exception:
+                pass
+
+            QMessageBox.information(
+                self,
+                "Upload abgeschlossen",
+                f"Upload erfolgreich.\n\nBackup auf Receiver:\n{backup_dir}",
+            )
+            self._dbg("Upload: OK")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Upload fehlgeschlagen", str(e))
+            self._dbg(f"Upload: FEHLER: {e}")
 
     def action_receiver_reload(self):
-        QMessageBox.information(
-            self,
-            "Enigma2 neu laden (kommt als nächstes)",
-            "Hier senden wir später per SSH z.B.:\n"
-            "killall -HUP enigma2\n"
-            "oder GUI-Neustart je nach Box.",
-        )
+        settings = AppSettings()
+        prof_name = settings.get_active_profile_name()
+        if not prof_name:
+            QMessageBox.warning(self, "Reload", "Kein Receiver-Profil aktiv.")
+            return
+
+        p = settings.load_profile(prof_name)
+        if not p:
+            QMessageBox.warning(self, "Reload", "Receiver-Profil nicht gefunden.")
+            return
+
+        try:
+            # Für OpenWebif ist Port normalerweise 80 (oder 83 / 8080 je nach Setup)
+            webif_port = getattr(p, "webif_port", 80)
+
+            self._dbg(f"Reload: starte auf {p.host} (WebIF:{webif_port})")
+
+            # reload_enigma2 gibt bei dir (wie vorher) einen String zurück
+            # port = p.port (SSH/SFTP Port) lassen wir drin, damit Signatur passt
+            result = reload_enigma2(
+                host=p.host,
+                port=p.port,
+                user=p.user,
+                password=p.password,
+                timeout=5,
+                webif_port=webif_port,
+            )
+
+            self._dbg(f"Reload: OK ({result})")
+            QMessageBox.information(self, "Bouquets neu geladen", str(result))
+
+        except Exception as e:
+            self._dbg(f"Reload: FEHLER: {e}")
+            QMessageBox.critical(self, "Reload fehlgeschlagen", str(e))
