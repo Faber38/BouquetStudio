@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QDialog,
     QTextBrowser,
+    QFrame,
 )
 
 from bouquetstudio.core.bouquets import parse_bouquets, load_bouquet_entries
@@ -107,14 +108,112 @@ class MainWindow(QMainWindow):
         # UI
         root = QWidget()
         self.setCentralWidget(root)
+        self.setStyleSheet(
+            self.styleSheet()
+            + """
+        /* Menüleiste */
+        QMenuBar {
+            background: #eef3ff;
+            border-bottom: 1px solid #b8c6e6;
+            padding: 4px;
+        }
+        QMenuBar::item {
+            background: transparent;
+            padding: 6px 10px;
+            border-radius: 6px;
+            margin: 0px 2px;
+        }
+        QMenuBar::item:selected {
+            background: #d7e3ff;
+        }
+        QMenuBar::item:pressed {
+            background: #c6d8ff;
+        }
+
+        /* Dropdown-Menüs */
+        QMenu {
+            background: white;
+            border: 1px solid #b8c6e6;
+            border-radius: 8px;
+            padding: 6px;
+        }
+        QMenu::item {
+            padding: 7px 24px;
+            border-radius: 6px;
+        }
+        QMenu::item:selected {
+            background: #2b6cff;
+            color: white;
+        }
+        QMenu::separator {
+            height: 1px;
+            background: #e0e6f5;
+            margin: 6px 10px;
+        }
+        """
+        )
+
         main = QHBoxLayout(root)
 
         # ---------------------------------------------------------------------
         # Left (Ziel-Bouquets)
         # ---------------------------------------------------------------------
-        left = QVBoxLayout()
-        left.addWidget(QLabel("Bouquets (Ziel)"))
+        left_panel = QFrame()
+        left_panel.setObjectName("leftPanel")
+
+        left_panel.setStyleSheet(
+            """
+            QFrame#leftPanel {
+                background-color: #eef3ff;          /* leichtes blau-grau */
+                border-right: 1px solid #b8c6e6;     /* passend zur Fläche */
+            }
+        """
+        )
+
+        left = QVBoxLayout(left_panel)
+        left.setContentsMargins(8, 8, 8, 8)
+        left.setSpacing(6)
+
+        left_title = QLabel("Bouquets (Ziel)")
+        left_title.setStyleSheet(
+            """
+            QLabel {
+                font-weight: bold;
+                padding: 6px 8px;
+                background-color: #d7e3ff;   /* Kopfzeile */
+                border: 1px solid #b8c6e6;
+                border-radius: 6px;
+            }
+        """
+        )
+
+        left.addWidget(left_title)
+
         self.bouquets = QListWidget()
+        self.bouquets.setStyleSheet(
+            """
+            QListWidget {
+                background: white;
+                border: 1px solid #c9d3ea;
+                border-radius: 6px;
+                padding: 4px;
+                outline: 0;
+            }
+            QListWidget::item {
+                padding: 6px;
+                border-radius: 4px;
+            }
+            QListWidget::item:hover {
+                background: #e6ecff;   /* dezentes Hover-Blau */
+            }
+            QListWidget::item:selected {
+                background: #2b6cff;
+                color: white;
+            }
+        """
+        )
+
+        self.bouquets.setFrameShape(QFrame.NoFrame)
         self.bouquets.setEditTriggers(
             QListWidget.EditTrigger.DoubleClicked | QListWidget.EditTrigger.EditKeyPressed
         )
@@ -129,21 +228,66 @@ class MainWindow(QMainWindow):
         left.addWidget(self.bouquets)
 
         self.add_bouquet_btn = QPushButton("➕ Bouquet hinzufügen")
+        self.add_bouquet_btn.setObjectName("primaryButton")
+        self.add_bouquet_btn.setStyleSheet(
+            """
+            QPushButton#primaryButton {
+                background-color: #e6f6ea;
+                border: 1px solid #b9e3c4;
+                color: #1f5a2e;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: bold;
+            }
+            QPushButton#primaryButton:hover {
+                background-color: #d6f0dd;
+            }
+            """
+        )
+
         self.add_bouquet_btn.setToolTip("Neues TV-Bouquet anlegen und in bouquets.tv eintragen")
         self.add_bouquet_btn.clicked.connect(self.action_add_new_bouquet)
         left.addWidget(self.add_bouquet_btn)
 
         # ✅ NEU: Bouquet entfernen
         self.remove_bouquet_btn = QPushButton("🗑️ Bouquet entfernen")
-        self.remove_bouquet_btn.setToolTip("Ausgewähltes Bouquet entfernen (Datei + bouquets.tv)")
-        self.remove_bouquet_btn.clicked.connect(self.action_remove_bouquet)
+        self.remove_bouquet_btn.setObjectName("dangerButton")
+        self.remove_bouquet_btn.setStyleSheet(
+            """
+            QPushButton#dangerButton {
+                background-color: #fde8e8;
+                border: 1px solid #e29a9a;
+                color: #8a1f1f;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: bold;
+            }
+            QPushButton#dangerButton:hover {
+                background-color: #fbd6d6;
+            }
+            """
+        )
+
         left.addWidget(self.remove_bouquet_btn)
 
         # ---------------------------------------------------------------------
         # Middle (Quelle)
         # ---------------------------------------------------------------------
         mid = QVBoxLayout()
-        mid.addWidget(QLabel("Sender / Einträge (Quelle)"))
+        mid_title = QLabel("Sender / Einträge (Quelle)")
+        mid_title.setStyleSheet(
+            """
+            QLabel {
+                font-weight: bold;
+                padding: 6px 8px;
+                background-color: #eeeeee;
+                border: 1px solid #d0d0d0;
+                border-radius: 6px;
+                color: #333333;
+            }
+            """
+        )
+        mid.addWidget(mid_title)
 
         mid.addWidget(QLabel("Quelle:"))
         self.source_combo = QComboBox()
@@ -152,6 +296,23 @@ class MainWindow(QMainWindow):
         from bouquetstudio.ui.draggable_list import BlockMoveListWidget
 
         self.entries = BlockMoveListWidget()
+        self.entries.setStyleSheet(
+            """
+            QListWidget {
+                background: #f7f7f7;
+                border: 1px solid #d0d0d0;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                padding: 6px;
+            }
+            QListWidget::item:selected {
+                background: #e0e0e0;
+                color: black;
+            }
+            """
+        )
 
         # Quelle: nur Drag, keine Drops (kein internes Verschieben -> Bug umgangen)
         self.entries.setDragEnabled(True)
@@ -162,14 +323,54 @@ class MainWindow(QMainWindow):
         # ---------------------------------------------------------------------
         # Right (Ziel)
         # ---------------------------------------------------------------------
-        right = QVBoxLayout()
-        right.addWidget(QLabel("Suche"))
+        right_panel = QFrame()
+        right_panel.setObjectName("rightPanel")
+        right_panel.setStyleSheet(
+            """
+            QFrame#rightPanel {
+                background-color: #eef3ff;
+                border-left: 1px solid #b8c6e6;
+            }
+            """
+        )
+
+        right = QVBoxLayout(right_panel)
+        right.setContentsMargins(8, 8, 8, 8)
+        right.setSpacing(6)
+        right_title_search = QLabel("Suche")
+        right_title_search.setStyleSheet(
+            """
+            QLabel {
+                font-weight: bold;
+                padding: 6px 8px;
+                background-color: #eeeeee;
+                border: 1px solid #d0d0d0;
+                border-radius: 6px;
+                color: #333333;
+            }
+            """
+        )
+        right.addWidget(right_title_search)
+
         self.search = QLineEdit()
         self.search.setPlaceholderText("Sender suchen…")
         right.addWidget(self.search)
 
         right.addSpacing(10)
-        right.addWidget(QLabel("Neue Reihenfolge (Ziel)"))
+        right_title_target = QLabel("Neue Reihenfolge (Ziel)")
+        right_title_target.setStyleSheet(
+            """
+            QLabel {
+                font-weight: bold;
+                padding: 6px 8px;
+                background-color: #eeeeee;
+                border: 1px solid #d0d0d0;
+                border-radius: 6px;
+                color: #333333;
+            }
+            """
+        )
+        right.addWidget(right_title_target)
 
         # 💾 Speichern-Button
         self.save_target_btn = QPushButton("💾 Bouquet speichern")
@@ -184,8 +385,30 @@ class MainWindow(QMainWindow):
         )
         self.add_line_btn.clicked.connect(self.action_add_target_line)
         right.addWidget(self.add_line_btn, alignment=Qt.AlignRight)
-
         self.target = TargetListWidget()
+        self.target.setStyleSheet(
+            """
+            QListWidget {
+                background: white;
+                border: 1px solid #c9d3ea;
+                border-radius: 6px;
+                padding: 4px;
+                outline: 0;
+            }
+            QListWidget::item {
+                padding: 6px;
+                border-radius: 4px;
+            }
+            QListWidget::item:hover {
+                background: #e6ecff;
+            }
+            QListWidget::item:selected {
+                background: #2b6cff;
+                color: white;
+            }
+            """
+        )
+
         right.addWidget(self.target, 1)
         # 📌 Doppelklick: Marker/Überschrift per Dialog ändern
         self.target.itemDoubleClicked.connect(self._edit_target_marker_dialog)
@@ -201,9 +424,9 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color: gray;")
         right.addWidget(hint)
 
-        main.addLayout(left, 1)
+        main.addWidget(left_panel, 1)
         main.addLayout(mid, 2)
-        main.addLayout(right, 2)
+        main.addWidget(right_panel, 2)
 
         self._build_menu()
 
@@ -215,6 +438,12 @@ class MainWindow(QMainWindow):
         self._path_label = QLabel("")
         self._path_label.setStyleSheet("color: gray;")
         self.statusBar().addPermanentWidget(self._path_label, 1)
+        from bouquetstudio import __version__
+
+        self._version_label = QLabel(f"v{__version__}")
+        self._version_label.setStyleSheet("color: gray;")
+        self.statusBar().addPermanentWidget(self._version_label)
+        self.setWindowTitle(f"BouquetStudio v{__version__} – {self.project_dir}")
 
         # ---------------------------------------------------------------------
         # Signals
