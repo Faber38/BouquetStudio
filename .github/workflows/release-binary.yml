@@ -35,22 +35,26 @@ jobs:
       - name: Compile sources
         run: python -m compileall -q src
 
-      - name: Build onefile binary (PyInstaller)
+       - name: Build onefile binary (PyInstaller)
         run: |
           pyinstaller --noconfirm --clean --onefile ^
             --paths src ^
+            --additional-hooks-dir hooks ^
             --name BouquetStudio ^
             app.py
         shell: cmd
         if: runner.os == 'Windows'
 
-      - name: Build onefile binary (PyInstaller)
+
+       - name: Build onefile binary (PyInstaller)
         run: |
           pyinstaller --noconfirm --clean --onefile \
             --paths src \
+            --additional-hooks-dir hooks \
             --name BouquetStudio \
             app.py
         if: runner.os != 'Windows'
+
 
       - name: Prepare release artifact (Linux)
         if: runner.os != 'Windows'
