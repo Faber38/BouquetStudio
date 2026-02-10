@@ -223,6 +223,9 @@ class MainWindow(QMainWindow):
         self.bouquets.setDropIndicatorShown(True)
         self.bouquets.setDragDropMode(QListWidget.DragDropMode.InternalMove)
 
+        # ✅ Mehrfachauswahl (Ctrl/Shift)
+        self.bouquets.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+
         self.bouquets.model().rowsMoved.connect(self._on_bouquet_order_changed)
 
         left.addWidget(self.bouquets)
@@ -269,6 +272,9 @@ class MainWindow(QMainWindow):
         )
 
         left.addWidget(self.remove_bouquet_btn)
+
+        # ✅ WICHTIG: Button mit Action verbinden
+        self.remove_bouquet_btn.clicked.connect(self.action_remove_bouquet)
 
         # ---------------------------------------------------------------------
         # Middle (Quelle)
@@ -693,39 +699,24 @@ class MainWindow(QMainWindow):
 
     def action_remove_bouquet(self):
         """
-        Entfernt das aktuell links ausgewählte Bouquet:
-        - Eintrag aus bouquets.tv entfernen
+        Entfernt ein oder mehrere links ausgewählte Bouquets:
+        - Eintrag(e) aus bouquets.tv entfernen
         - userbouquet.*.tv (nach Backup) löschen
         """
         if not self.workspace_root:
             QMessageBox.warning(self, "Bouquet entfernen", "Kein Projektordner geöffnet.")
             return
 
-        idx = self.bouquets.currentRow()
-        if idx < 0 or idx >= len(self.bouquets_data):
+        selected = self.bouquets.selectedItems()
+        if not selected:
             QMessageBox.warning(self, "Bouquet entfernen", "Kein Bouquet ausgewählt.")
             return
 
-        b = self.bouquets_data[idx]
-        name = (getattr(b, "name", "") or "<unbekannt>").strip()
-
-        # Pfad ermitteln
-        try:
-            path = _get_bouquet_file_path(self.workspace_root, b)
-        except Exception as e:
-            QMessageBox.critical(self, "Bouquet entfernen", f"Dateipfad nicht ermittelbar:\n{e}")
-            return
-
-        filename = path.name
-
-        # Schutz: nur userbouquet.* löschen
-        if not filename.startswith("userbouquet."):
-            QMessageBox.warning(
-                self,
-                "Bouquet entfernen",
-                f"Dieses Bouquet scheint kein userbouquet.* zu sein:\n{filename}\n\n"
-                "Zum Schutz wird es nicht gelöscht.",
-            )
+        # Indizes aus selektierten Items
+        indices = sorted({self.bouquets.row(it) for it in selected})
+        indices = [i for i in indices if 0 <= i < len(self.bouquets_data)]
+        if not indices:
+            QMessageBox.warning(self, "Bouquet entfernen", "Auswahl ungültig.")
             return
 
         bouquets_tv = self.workspace_root / "bouquets.tv"
@@ -733,16 +724,47 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Bouquet entfernen", f"Nicht gefunden: {bouquets_tv}")
             return
 
-        # Warnung / Bestätigung
+        # Daten vorbereiten (Name + Path)
+        items = []
+        blocked = []
+        for idx in indices:
+            b = self.bouquets_data[idx]
+            name = (getattr(b, "name", "") or "<unbekannt>").strip()
+            try:
+                path = _get_bouquet_file_path(self.workspace_root, b)
+            except Exception as e:
+                blocked.append(f"- {name}: Dateipfad nicht ermittelbar ({e})")
+                continue
+
+            filename = path.name
+            if not filename.startswith("userbouquet."):
+                blocked.append(f"- {name}: kein userbouquet.* ({filename})")
+                continue
+
+            items.append((idx, name, path, filename))
+
+        if not items:
+            QMessageBox.warning(
+                self,
+                "Bouquet entfernen",
+                "Keines der ausgewählten Bouquets kann gelöscht werden.\n\n"
+                + ("\n".join(blocked) if blocked else ""),
+            )
+            return
+
+        # Bestätigung (ein Dialog für alle)
+        list_text = "\n".join([f"• {name}  ({fn})" for (_, name, _, fn) in items])
+        extra = ""
+        if blocked:
+            extra = "\n\nNicht löschbar (Schutz):\n" + "\n".join(blocked)
+
         res = QMessageBox.question(
             self,
-            "Bouquet entfernen",
-            f"Bouquet wirklich entfernen?\n\n"
-            f"Name: {name}\n"
-            f"Datei: {filename}\n\n"
-            f"• Eintrag wird aus bouquets.tv entfernt\n"
-            f"• Datei wird gelöscht (nach Backup)\n\n"
-            f"Diese Aktion kann nicht rückgängig gemacht werden.",
+            "Bouquets entfernen",
+            f"Folgende Bouquets wirklich entfernen?\n\n{list_text}\n\n"
+            f"• Einträge werden aus bouquets.tv entfernt\n"
+            f"• Dateien werden gelöscht (nach Backup)\n\n"
+            f"Diese Aktion kann nicht rückgängig gemacht werden." + extra,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -753,37 +775,39 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
         try:
-            # 1) Backup userbouquet-Datei
-            if path.exists():
-                backup_b = path.with_suffix(path.suffix + f".bak.{ts}")
-                backup_b.write_bytes(path.read_bytes())
-                self._dbg(f"Bouquet entfernen: backup bouquet={backup_b}")
-            else:
-                self._dbg("Bouquet entfernen: bouquet-datei existiert nicht (trotzdem weiter)")
-
-            # 2) Backup bouquets.tv
+            # 1) Backup bouquets.tv (einmal)
             backup_tv = bouquets_tv.with_suffix(bouquets_tv.suffix + f".bak.{ts}")
             backup_tv.write_bytes(bouquets_tv.read_bytes())
             self._dbg(f"Bouquet entfernen: backup bouquets.tv={backup_tv}")
 
-            # 3) bouquets.tv bereinigen (SERVICE-Zeile + folgende DESCRIPTION-Zeile entfernen)
-            lines = bouquets_tv.read_text(encoding="utf-8", errors="ignore").splitlines()
-            needle = f'FROM BOUQUET "{filename}"'
-            new_lines: list[str] = []
+            # 2) Backup + löschen der userbouquet-Dateien
+            for _, name, path, _ in items:
+                if path.exists():
+                    backup_b = path.with_suffix(path.suffix + f".bak.{ts}")
+                    backup_b.write_bytes(path.read_bytes())
+                    self._dbg(f"Bouquet entfernen: backup bouquet={backup_b}")
+                    path.unlink()
+                    self._dbg(f"Bouquet entfernen: gelöscht {path}")
+                else:
+                    self._dbg(f"Bouquet entfernen: Datei fehlt (übersprungen): {path} ({name})")
 
+            # 3) bouquets.tv bereinigen: alle entsprechenden SERVICE + direkt folgende DESCRIPTION entfernen
+            lines = bouquets_tv.read_text(encoding="utf-8", errors="ignore").splitlines()
+            needles = {f'FROM BOUQUET "{fn}"' for (_, _, _, fn) in items}
+
+            new_lines: list[str] = []
             skip_next_desc = False
             removed = 0
 
             for line in lines:
                 if skip_next_desc:
-                    # nur DIREKT folgende DESCRIPTION-Zeile skippen
                     if line.strip().startswith("#DESCRIPTION"):
                         removed += 1
                         skip_next_desc = False
                         continue
                     skip_next_desc = False
 
-                if needle in line:
+                if any(n in line for n in needles):
                     removed += 1
                     skip_next_desc = True
                     continue
@@ -795,12 +819,7 @@ class MainWindow(QMainWindow):
 
             self._dbg(f"Bouquet entfernen: bouquets.tv bereinigt (removed_lines={removed})")
 
-            # 4) userbouquet-Datei löschen
-            if path.exists():
-                path.unlink()
-                self._dbg(f"Bouquet entfernen: gelöscht {path}")
-
-            # 5) UI neu laden
+            # 4) UI neu laden (einmal)
             self.open_project_dir(self.workspace_root)
 
         except Exception as e:
