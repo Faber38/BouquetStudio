@@ -98,6 +98,9 @@ class MainWindow(QMainWindow):
         self._dirty_bouquet_names: set[int] = set()
         self._dirty_bouquet_content: set[int] = set()
         self._dirty_bouquet_order = False
+        # ✅ Merker für Bouquet-Wechsel (damit wir bei Dirty warnen können)
+        self._last_target_index = -1
+        self._switching_bouquet = False
 
         # ✅ verhindert Dirty beim programmgesteuerten Befüllen/Löschen
         self._suppress_dirty = False
@@ -1122,6 +1125,68 @@ class MainWindow(QMainWindow):
     # Ziel-Bouquet (links) auswählen
     # -------------------------------------------------------------------------
     def _on_target_bouquet_selected(self, index: int):
+        # ✅ Dirty-Warnung beim Wechsel des Ziel-Bouquets (links)
+        if not self._switching_bouquet:
+            old = getattr(self, "_last_target_index", -1)
+
+            # Wechsel nur dann abfangen, wenn wir wirklich von einem alten Bouquet kommen
+            if old != -1 and old != index:
+                old_dirty = (
+                    old in self._dirty_bouquet_names
+                    or old in self._dirty_bouquet_content
+                    or self._dirty_bouquet_order
+                )
+
+                if old_dirty:
+                    box = QMessageBox(self)
+                    box.setIcon(QMessageBox.Warning)
+                    box.setWindowTitle("Ungespeicherte Änderungen")
+                    box.setText(
+                        "Das aktuell bearbeitete Bouquet hat ungespeicherte Änderungen.\n\n"
+                        "Wenn du jetzt links ein anderes Bouquet auswählst, gehen diese Änderungen verloren."
+                    )
+
+                    btn_save = box.addButton("Speichern", QMessageBox.AcceptRole)
+                    btn_discard = box.addButton("Verwerfen", QMessageBox.DestructiveRole)
+                    btn_cancel = box.addButton("Abbrechen", QMessageBox.RejectRole)
+                    box.setDefaultButton(btn_cancel)
+
+                    box.exec()
+                    clicked = box.clickedButton()
+
+                    if clicked == btn_cancel:
+                        # Zur alten Auswahl zurückspringen
+                        self.bouquets.blockSignals(True)
+                        self.bouquets.setCurrentRow(old)
+                        self.bouquets.blockSignals(False)
+                        return
+
+                    if clicked == btn_save:
+                        # Erst wieder das alte Bouquet aktivieren, dann speichern
+                        self.bouquets.blockSignals(True)
+                        self.bouquets.setCurrentRow(old)
+                        self.bouquets.blockSignals(False)
+
+                        self.action_save_project()
+
+                        # Falls nach dem Speichern noch dirty -> nicht wechseln (Speichern abgebrochen/fehlgeschlagen)
+                        still_dirty = (
+                            old in self._dirty_bouquet_names
+                            or old in self._dirty_bouquet_content
+                            or self._dirty_bouquet_order
+                        )
+                        if still_dirty:
+                            return
+
+                        # Jetzt den Wechsel wirklich durchführen (rekursionsfrei)
+                        self._switching_bouquet = True
+                        try:
+                            self.bouquets.setCurrentRow(index)
+                        finally:
+                            self._switching_bouquet = False
+                        return
+                    # btn_discard => einfach weiterlaufen (Wechsel zulassen)
+
         if index < 0 or index >= len(self.bouquets_data):
             return
 
@@ -1146,6 +1211,7 @@ class MainWindow(QMainWindow):
 
         self._on_source_bouquet_selected(index)
         self._update_source_marks()
+        self._last_target_index = index
 
     def _on_bouquet_order_changed(self, *args):
         self._dirty_bouquet_order = True
