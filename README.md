@@ -7,6 +7,7 @@ Keine automatische Magie, kein stilles Umsortieren –
 **nur das, was der Nutzer bewusst auswählt und speichert, wird übernommen.**
 
 ---
+![BouquetStudio – Hauptfenster](docs/BouquetStudio.png)
 
 ## ✨ Funktionsübersicht
 
